@@ -394,56 +394,137 @@ class Shopify1CheckoutAutomation:
             print(f"❌ Errore completamento: {e}")
             return False
     
-    def analyze_result(self):
-        """Analizza risultato"""
-        print("🔍 Analisi risultato Shopify...")
+   def analyze_result(self):
+    """Analizza risultato - VERSIONE CORRETTA"""
+    print("🔍 Analisi risultato Shopify...")
+    
+    try:
+        current_url = self.driver.current_url.lower()
+        page_text = self.driver.page_source.lower()
+        page_title = self.driver.title.lower()
         
-        try:
-            current_url = self.driver.current_url
-            page_text = self.driver.page_source.lower()
-            
-            print(f"📄 URL: {current_url}")
-            
-            # 1. CONTROLLA URL DI SUCCESSO
-            if 'thank_you' in current_url or 'thank-you' in current_url or 'order' in current_url:
-                print("✅ SUCCESSO - URL di ringraziamento")
-                return "APPROVED"
-            
-            # 2. CONTROLLA MESSAGGI DI SUCCESSO NEL TESTO
-            success_keywords = ['thank you', 'order confirmed', 'order number', 'confirmation', 'success']
-            for keyword in success_keywords:
-                if keyword in page_text:
-                    print(f"✅ SUCCESSO - Trovato: {keyword}")
-                    return "APPROVED"
-            
-            # 3. CONTROLLA ERRORI DI CARTA NEL TESTO
-            decline_keywords = [
-                'your card was declined', 'card was declined', 'declined', 
-                'do not honor', 'insufficient funds', 'invalid card',
-                'transaction not allowed', 'payment failed'
-            ]
-            for keyword in decline_keywords:
-                if keyword in page_text:
-                    print(f"❌ DECLINED - Trovato: {keyword}")
-                    return "DECLINED"
-            
-            # 4. SE SIAMO ANCORA IN CHECKOUT, È FALLITO
-            if 'checkout' in current_url:
-                print("❌ DECLINED - Ancora in checkout")
+        print(f"📄 URL: {current_url}")
+        print(f"📄 Title: {page_title}")
+        
+        # DEBUG: Stampa parte del testo per debugging
+        print(f"🔍 Sample page text: {page_text[:500]}...")
+        
+        # 1. PRIMA CONTROLLA GLI ERRORI DI CARTA (MOLTO SPECIFICI)
+        decline_keywords = [
+            'your card was declined',
+            'card was declined', 
+            'declined',
+            'do not honor',
+            'insufficient funds',
+            'invalid card',
+            'transaction not allowed',
+            'payment failed',
+            'try again',
+            'error processing',
+            'cannot process',
+            'unsuccessful',
+            'failed'
+        ]
+        
+        for keyword in decline_keywords:
+            if keyword in page_text:
+                print(f"❌ DECLINED - Trovato: {keyword}")
                 return "DECLINED"
+        
+        # 2. Controlla elementi visivi di errore
+        try:
+            error_elements = self.driver.find_elements(By.CSS_SELECTOR, ".error, .field-error, .notice--error, .alert--error, [class*='error']")
+            for element in error_elements:
+                if element.is_displayed():
+                    error_text = element.text.lower()
+                    if any(keyword in error_text for keyword in ['card', 'declined', 'failed', 'invalid']):
+                        print(f"❌ DECLINED - Elemento errore: {error_text[:100]}")
+                        return "DECLINED"
+        except:
+            pass
+        
+        # 3. CONTROLLA SE SIAMO ANCORA IN CHECKOUT CON MESSAGGI DI ERRORE
+        if 'checkout' in current_url:
+            # Controlla se ci sono messaggi di errore visibili nel checkout
+            try:
+                # Cerca messaggi di errore specifici di Shopify
+                shopify_errors = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'declined') or contains(text(), 'error') or contains(text(), 'failed')]")
+                for error in shopify_errors:
+                    if error.is_displayed():
+                        error_text = error.text.lower()
+                        if any(word in error_text for word in ['card', 'payment', 'transaction']):
+                            print(f"❌ DECLINED - Messaggio Shopify: {error_text[:100]}")
+                            return "DECLINED"
+            except:
+                pass
             
-            # 5. SE SIAMO SU UNA PAGINA DIVERSA DA CHECKOUT, È SUCCESSO
-            if 'earthesim.com' in current_url and 'checkout' not in current_url:
-                print("✅ APPROVED - Pagina diversa da checkout")
-                return "APPROVED"
-            
-            # 6. DEFAULT: DECLINED
-            print("❌ DECLINED - Nessun indicatore di successo trovato")
+            # Se siamo ancora nel checkout DOPO il tentativo di pagamento, è molto probabilmente declined
+            print("❌ DECLINED - Ancora in checkout dopo pagamento")
             return "DECLINED"
-            
-        except Exception as e:
-            print(f"💥 Errore analisi: {e}")
-            return f"ERROR - {str(e)}"
+        
+        # 4. SOLO ORA CONTROLLA I SUCCESSI
+        success_keywords = [
+            'thank you',
+            'order confirmed', 
+            'order number',
+            'confirmation',
+            'success',
+            'completed',
+            'receipt'
+        ]
+        
+        for keyword in success_keywords:
+            if keyword in page_text:
+                print(f"✅ APPROVED - Trovato: {keyword}")
+                return "APPROVED"
+        
+        # 5. CONTROLLA URL DI SUCCESSO
+        success_urls = ['thank_you', 'thank-you', 'order', 'confirmation']
+        if any(url in current_url for url in success_urls):
+            print("✅ APPROVED - URL di successo")
+            return "APPROVED"
+        
+        # 6. CONTROLLA ELEMENTI DI SUCCESSO VISIVI
+        try:
+            success_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Order') or contains(text(), 'Thank')]")
+            for element in success_elements:
+                if element.is_displayed() and any(word in element.text.lower() for word in ['confirmed', 'number', 'thank']):
+                    print(f"✅ APPROVED - Elemento successo: {element.text[:100]}")
+                    return "APPROVED"
+        except:
+            pass
+        
+        # 7. SE SIAMO SU UNA PAGINA DIVERSA DA CHECKOUT, CONTROLLA BENE
+        if 'earthesim.com' in current_url and 'checkout' not in current_url:
+            # Ma controlla che non sia una pagina di errore
+            if any(keyword in page_text for keyword in ['error', 'failed', 'try again']):
+                print("❌ DECLINED - Pagina diversa ma con errori")
+                return "DECLINED"
+            else:
+                print("✅ APPROVED - Pagina diversa da checkout senza errori")
+                return "APPROVED"
+        
+        # 8. ULTIMO CONTROLLO: CERCA IL MESSAGGIO "YOUR CARD WAS DECLINED" IN TUTTE LE FORME POSSIBILI
+        declined_phrases = [
+            'your card was declined',
+            'your card has been declined', 
+            'card declined',
+            'payment declined',
+            'transaction declined'
+        ]
+        
+        for phrase in declined_phrases:
+            if phrase in page_text:
+                print(f"❌ DECLINED - Frase specifica: {phrase}")
+                return "DECLINED"
+        
+        # 9. DEFAULT: SE NON SIAMO SICURI, MEGLIO DECLINED CHE FALSI POSITIVI
+        print("❌ DECLINED - Nessun indicatore chiaro di successo trovato")
+        return "DECLINED"
+        
+    except Exception as e:
+        print(f"💥 Errore analisi: {e}")
+        return f"ERROR - {str(e)}"
     
     def process_payment(self, card_data):
         """Processa pagamento"""
